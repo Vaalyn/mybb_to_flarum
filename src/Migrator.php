@@ -19,6 +19,7 @@ class Migrator
 	private $connection;
 	private $db_prefix;
 	private $mybb_path;
+	private $deletedUser;
 	private $count = [
 		"users" => 0,
 		"groups" => 0,
@@ -28,6 +29,7 @@ class Migrator
 	];
 
 	const FLARUM_AVATAR_PATH = "assets/avatars/";
+	const FLARUM_DELETED_USERNAME = "[deleted]";
 
 	/**
 	 * Migrator constructor
@@ -139,6 +141,19 @@ class Migrator
 
 				$this->count["users"]++;
 			}
+			
+			$this->deletedUser = User::register(
+				self::FLARUM_DELETED_USERNAME,
+				'',
+				password_hash(uniqid('', true), PASSWORD_BCRYPT)
+			);
+
+			$this->deletedUser->activate();
+			$this->deletedUser->joined_at = date('Y-m-d H:i:s', time());
+			$this->deletedUser->last_seen_at = date('Y-m-d H:i:s', time());
+			$this->deletedUser->discussion_count = 0;
+			$this->deletedUser->comment_count = 0;
+			$this->deletedUser->save();
 		}
 
 		$this->enableForeignKeyChecks();
@@ -202,9 +217,15 @@ class Migrator
 				$discussion->id = $trow->tid;
 				$discussion->title = $trow->subject;
 
+				$discussionUserId = $trow->uid;
+
+				if ((int) $discussionUserId === 0) {
+					$discussionUserId = $this->deletedUser->id;
+				}
+
 				if($migrateWithUsers)
-					$discussion->user()->associate(User::find($trow->uid));
-				
+					$discussion->user()->associate(User::find($discussionUserId));
+
 				$discussion->slug = $this->slugDiscussion($trow->subject);
 				$discussion->is_approved = true;
 				$discussion->is_locked = $trow->closed == "1";
@@ -214,8 +235,8 @@ class Migrator
 
 				$this->count["discussions"]++;
 
-				if(!in_array($trow->uid, $usersToRefresh))
-					$usersToRefresh[] = $trow->uid;
+				if(!in_array($discussionUserId, $usersToRefresh))
+					$usersToRefresh[] = $discussionUserId;
 
 				$continue = true;
 
@@ -240,7 +261,13 @@ class Migrator
 				{
 					if(!$migrateSoftDeletePosts && $prow->visible == -1) continue;
 
-					$post = CommentPost::reply($discussion->id, $prow->message, $prow->uid, null);
+					$postUserId = $prow->uid;
+
+					if ((int) $postUserId === 0) {
+						$postUserId = $this->deletedUser->id;
+					}
+
+					$post = CommentPost::reply($discussion->id, $prow->message, $postUserId, null);
 					$post->created_at = $prow->dateline;
 					$post->is_approved = true;
 					$post->number = ++$number;
@@ -250,8 +277,8 @@ class Migrator
 					if(is_null($firstPost))
 						$firstPost = $post;
 
-					if(!in_array($prow->uid, $usersToRefresh))
-						$usersToRefresh[] = $prow->uid;
+					if(!in_array($postUserId, $usersToRefresh))
+						$usersToRefresh[] = $postUserId;
 
 					$this->count["posts"]++;					
 				}
